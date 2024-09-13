@@ -174,14 +174,14 @@ def parse_image_request(response):
 def generate_and_display_image(prompt, image_id):
     random_seed = random.randint(1000, 9999)
     full_prompt = f"{prompt}, {append_message}"
-    url_display = f"https://image.pollinations.ai/prompt/{full_prompt}?nologo=true&model=flux&nofeed=true&width=1024&height=1024&seed={random_seed}"
+    url_display = f"https://image.pollinations.ai/prompt/{full_prompt}?nologo=true&model=flux&nofeed=true&width=2048&height=1024&seed={random_seed}"
     print(f"Generating image:\nPrompt: {full_prompt}\nSeed: {random_seed}\nURL: {url_display}")
 
-    url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(full_prompt)}?nologo=true&model=flux&nofeed=true&width=1024&height=1024&seed={random_seed}"
+    url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(full_prompt)}?nologo=true&model=flux&nofeed=true&width=2048&height=1024&seed={random_seed}"
     response = requests.get(url)
     if response.status_code == 200:
         full_image = Image.open(BytesIO(response.content))
-        display_size = (150, 150)
+        display_size = (300, 150)
         display_image = full_image.copy()
         display_image.thumbnail(display_size, Image.LANCZOS)
         photo = ImageTk.PhotoImage(display_image)
@@ -223,8 +223,8 @@ def enlarge_image_popup(event):
         # Rebind the close event to the new label
         image_label.bind("<Button-1>", close_popup)
 
-    # Resize the image to a maximum of 750x750, keeping the aspect ratio
-    max_size = (750, 750)
+    # Resize the image to a maximum of 1500x750, keeping the aspect ratio
+    max_size = (1500, 750)
     full_image.thumbnail(max_size, Image.LANCZOS)
 
     # Display the resized image in the popup window
@@ -276,12 +276,12 @@ def process_ai_response(conversation_history):
             print("No image prompt detected")  # Debug print
 
 def display_placeholder_image(image_id):
-    placeholder = Image.new('RGB', (150, 150), color='lightgray')
+    placeholder = Image.new('RGB', (300, 150), color='lightgray')
     draw = ImageDraw.Draw(placeholder)
-    draw.text((75, 75), "Loading...", fill='black', anchor='mm')
+    draw.text((150, 75), "Loading...", fill='black', anchor='mm')
     photo = ImageTk.PhotoImage(placeholder)
     
-    label = tk.Label(chat_window, image=photo, width=150, height=150)
+    label = tk.Label(chat_window, image=photo, width=300, height=150)
     label.image = photo
     label.image_id = image_id
     
