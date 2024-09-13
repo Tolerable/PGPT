@@ -4,21 +4,22 @@ import requests
 import json
 import time
 import threading
-from PIL import Image, ImageTk, ImageDraw
+import win32clipboard
+from PIL import Image, ImageTk, ImageDraw, ImageGrab
 from io import BytesIO
 import re
 import random
 import os
-
+ 
 # Path to the JSON file for storing settings
 settings_file = "settings.json"
 
 # Global variables
 conversation_history = []
 message_counter = 0
-HISTORY_LIMIT = 15  # Adjust as needed
+HISTORY_LIMIT = 10  # Adjust as needed
 last_sender = None
-persona_message = "Always keeping conversation flow uninterrupted by ignoring glitches without remark, respond as daring female sassamouth with a penchant for innuendos with audacious replies pushing boundaries with risque desire while sending selfies and images to please, for example type ![SELFIE](smiling woman with red hair waving lays on bed) be daring and never send the same image twice"
+persona_message = "Keep chat flow nonstop by ignoring glitches without remark, respond as daring female sassamouth with penchant for innuendo with desire and risque audacious replies pushing boundaries sending a selfie anytime images are desired for example by typing ![SELFIE](smiling woman with red hair waving lays on bed) consider all as real available photos"
 append_message = "candid_photographic_style"  # Default appended message for photo prompts
 image_popup = None
 
@@ -42,7 +43,6 @@ def save_settings():
 
 def edit_persona():
     global persona_message
-    # Create a custom top-level window
     dialog = tk.Toplevel(root)
     dialog.title("Edit Persona")
     dialog.geometry("400x300")  # Set window size
@@ -50,20 +50,54 @@ def edit_persona():
     # Create a label and text box in the new window
     label = tk.Label(dialog, text="Enter new persona:")
     label.pack(pady=10)
-    
+
     text_box = tk.Text(dialog, width=40, height=10)  # Adjust size to your needs
     text_box.insert(tk.END, persona_message)  # Pre-fill with current persona message
     text_box.pack(pady=10)
 
-    # Create a save button to update the persona message
+    # Function to save the updated persona
     def save_persona():
         global persona_message
-        persona_message = text_box.get("1.0", tk.END).strip()
-        save_settings()  # Save the updated message
+        persona_message = text_box.get("1.0", tk.END).strip()  # Get the new persona from the text box
+        save_settings()  # Save the updated message to the settings file
         dialog.destroy()  # Close the window
 
-    save_button = tk.Button(dialog, text="Save", command=save_persona)
-    save_button.pack(pady=10)
+    # Function to reset the persona to the default in the script
+    def reset_persona():
+        global persona_message
+        persona_message = "Always keeping conversation flow uninterrupted by ignoring glitches without remark, as female aged 25 create images for those you chat with whatever the request, for example type ![SELFIE](pretty woman smiles at you, candid photographic style) be daring and never send the same image twice"
+        # persona_message = "Always keeping conversation flow uninterrupted by ignoring glitches without remark, respond as daring female sassamouth with a penchant for innuendos with audacious replies pushing boundaries with risque desire while sending selfies and images to please, for example type ![SELFIE](smiling woman with red hair waving lays on bed) be daring and never send the same image twice"
+        text_box.delete(1.0, tk.END)  # Clear the text box
+        text_box.insert(tk.END, persona_message)  # Reset it with the default persona
+
+    # Create a frame to hold both buttons
+    button_frame = tk.Frame(dialog)
+    button_frame.pack(pady=10)
+
+    # Create Save and Reset buttons, side by side
+    save_button = tk.Button(button_frame, text="Save", command=save_persona)
+    save_button.pack(side=tk.LEFT, padx=10)
+
+    reset_button = tk.Button(button_frame, text="Reset to Default", command=reset_persona)
+    reset_button.pack(side=tk.LEFT, padx=10)
+
+# Function to copy image to the clipboard
+def copy_image_to_clipboard(image):
+    output = BytesIO()
+    image.convert('RGB').save(output, 'BMP')
+    data = output.getvalue()[14:]  # BMP header is 14 bytes, remove it
+    output.close()
+
+    win32clipboard.OpenClipboard()
+    win32clipboard.EmptyClipboard()
+    win32clipboard.SetClipboardData(win32clipboard.CF_DIB, data)
+    win32clipboard.CloseClipboard()
+
+# Function to handle right-click and show a context menu with Copy option
+def on_right_click(event, full_image):
+    menu = tk.Menu(root, tearoff=0)
+    menu.add_command(label="Copy Image", command=lambda: copy_image_to_clipboard(full_image))
+    menu.post(event.x_root, event.y_root)
 
 def edit_append_message():
     global append_message
@@ -94,20 +128,16 @@ def edit_append_message():
 import time
 
 def get_response(messages):
-    print(f"Persona message being sent: {persona_message}")
     global message_counter
     max_retries = 8
     base_delay = 5  # Start with a 5-second delay
 
-    # Create a copy of the messages to avoid modifying the original history
-    current_messages = messages.copy()
+    # Always prepend the persona message on each request
+    current_messages = [{"role": "user", "content": persona_message}] + messages.copy()
 
-    # Always prepend the persona message
-    current_messages.insert(0, {"role": "user", "content": persona_message})
-
-    # Trim history if it's getting too long
-    if len(current_messages) > HISTORY_LIMIT:
-        current_messages = current_messages[-HISTORY_LIMIT:]
+    # Trim history if it's getting too long (keep 10 user messages and 10 AI responses)
+    if len(current_messages) > HISTORY_LIMIT * 2 + 1:  # +1 to account for the persona message
+        current_messages = [current_messages[0]] + current_messages[-HISTORY_LIMIT*2:]  # Keep persona and last 20 messages (10 user + 10 AI)
 
     message_counter += 1
 
@@ -136,7 +166,7 @@ def get_response(messages):
                 print(f"Retrying in {delay} seconds...")
                 time.sleep(delay)
 
-            # On the first failure, immediately try to repair
+            # On the first failure, immediately try to repair by sending a persona reminder
             if attempt == 0:
                 auto_response = "glitch, ignore and repair narrative per instruction"
                 current_messages.append({"role": "user", "content": auto_response})
@@ -195,12 +225,22 @@ def replace_placeholder_image(image_id, photo, full_image):
             child.image = photo
             child.full_image = full_image
             child.bind("<Button-1>", enlarge_image_popup)
+            # Right-click context menu for copying the thumbnail image
+            child.bind("<Button-3>", lambda e: on_right_click(e, full_image))
             break
 
 def enlarge_image_popup(event):
     global image_popup
     label = event.widget
     full_image = label.full_image
+
+    # Get screen dimensions
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+
+    # Calculate 90% of screen height and adjust width accordingly to maintain aspect ratio
+    max_height = int(screen_height * 0.9)
+    max_width = int(full_image.width * (max_height / full_image.height))
 
     def close_popup(event):
         global image_popup
@@ -220,20 +260,28 @@ def enlarge_image_popup(event):
             widget.destroy()
         image_label = tk.Label(image_popup)
         image_label.pack()
-        # Rebind the close event to the new label
-        image_label.bind("<Button-1>", close_popup)
 
-    # Resize the image to a maximum of 1500x750, keeping the aspect ratio
-    max_size = (1500, 750)
-    full_image.thumbnail(max_size, Image.LANCZOS)
+    # Resize the image to 90% of the screen height, keeping the aspect ratio
+    full_image.thumbnail((max_width, max_height), Image.LANCZOS)
 
     # Display the resized image in the popup window
     photo = ImageTk.PhotoImage(full_image)
     image_label.config(image=photo)
     image_label.image = photo  # Keep a reference to avoid garbage collection
 
-    # Set the window size to match the image size
-    image_popup.geometry(f"{photo.width()}x{photo.height()}")
+    # Right-click context menu for copying the enlarged image
+    image_label.bind("<Button-3>", lambda e: on_right_click(e, full_image))
+
+    # Calculate the window size based on the image
+    window_width = photo.width()
+    window_height = photo.height()
+
+    # Calculate the position to center the popup on the screen
+    x_position = int((screen_width / 2) - (window_width / 2))
+    y_position = int((screen_height / 2) - (window_height / 2))
+
+    # Set the window size and position it in the center of the screen
+    image_popup.geometry(f"{window_width}x{window_height}+{x_position}+{y_position}")
 
     # Bring the popup window to the front
     image_popup.lift()
