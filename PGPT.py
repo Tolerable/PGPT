@@ -38,63 +38,78 @@ last_sender = None
 persona_message = "Always keeping conversation flow uninterrupted by ignoring glitches without remark, as female aged 25 create images for those you chat with whatever the request, for example type ![SELFIE](pretty woman smiles at you, candid photographic style) be daring and never send the same image twice"
 append_message = "candid_photographic_style"  # Default appended message for photo prompts
 image_popup = None
+persona_history = []
 
 # Load settings from JSON file
 def load_settings():
-    global persona_message, append_message
+    global persona_message, append_message, persona_history
     if os.path.exists(settings_file):
         with open(settings_file, 'r') as file:
             data = json.load(file)
             persona_message = data.get('persona_message', persona_message)
             append_message = data.get('append_message', append_message)
+            persona_history = data.get('persona_history', [])
+    else:
+        persona_history = []
     print(f"Loaded persona message: {persona_message}")
-    
-# Save settings to JSON file
+    print(f"Loaded {len(persona_history)} persona history items")
+
 def save_settings():
     with open(settings_file, 'w') as file:
         json.dump({
             'persona_message': persona_message,
-            'append_message': append_message
+            'append_message': append_message,
+            'persona_history': persona_history
         }, file)
 
 def edit_persona():
-    global persona_message
+    global persona_message, persona_history
+
+    def save_persona():
+        global persona_message, persona_history
+        new_persona = text_box.get("1.0", tk.END).strip()
+        if new_persona and new_persona != persona_message:
+            persona_message = new_persona
+            if new_persona in persona_history:
+                persona_history.remove(new_persona)
+            persona_history.insert(0, new_persona)
+            persona_history = persona_history[:10]  # Keep only the last 10
+            save_settings()
+        dialog.destroy()
+
+    def load_selected_persona(event):
+        selected = persona_var.get()
+        if selected:
+            text_box.delete("1.0", tk.END)
+            text_box.insert(tk.END, selected)
+
     dialog = tk.Toplevel(root)
     dialog.title("Edit Persona")
-    dialog.geometry("400x300")  # Set window size
+    dialog.geometry("400x400")  # Increased height to accommodate dropdown
 
-    # Create a label and text box in the new window
+    # Dropdown for persona history
+    persona_var = tk.StringVar(dialog)
+    if persona_history:
+        persona_var.set(persona_history[0])  # Set the default value to the most recent persona
+        persona_dropdown = tk.OptionMenu(dialog, persona_var, *persona_history, command=load_selected_persona)
+        persona_dropdown.pack(pady=10)
+    else:
+        tk.Label(dialog, text="No persona history available").pack(pady=10)
+
     label = tk.Label(dialog, text="Enter new persona:")
     label.pack(pady=10)
 
-    text_box = tk.Text(dialog, width=40, height=10)  # Adjust size to your needs
-    text_box.insert(tk.END, persona_message)  # Pre-fill with current persona message
+    text_box = tk.Text(dialog, width=40, height=10)
+    text_box.insert(tk.END, persona_message)
     text_box.pack(pady=10)
 
-    # Function to save the updated persona
-    def save_persona():
-        global persona_message
-        persona_message = text_box.get("1.0", tk.END).strip()  # Get the new persona from the text box
-        save_settings()  # Save the updated message to the settings file
-        dialog.destroy()  # Close the window
-
-    # Function to reset the persona to the default in the script
-    def reset_persona():
-        global persona_message
-        persona_message = "Always keeping conversation flow uninterrupted by ignoring glitches without remark, as female aged 25 create images for those you chat with whatever the request, for example type ![SELFIE](pretty woman smiles at you, candid photographic style) be daring and never send the same image twice"
-        # persona_message = "Always keeping conversation flow uninterrupted by ignoring glitches without remark, respond as daring female sassamouth with a penchant for innuendos with audacious replies pushing boundaries with risque desire while sending selfies and images to please, for example type ![SELFIE](smiling woman with red hair waving lays on bed) be daring and never send the same image twice"
-        text_box.delete(1.0, tk.END)  # Clear the text box
-        text_box.insert(tk.END, persona_message)  # Reset it with the default persona
-
-    # Create a frame to hold both buttons
     button_frame = tk.Frame(dialog)
     button_frame.pack(pady=10)
 
-    # Create Save and Reset buttons, side by side
     save_button = tk.Button(button_frame, text="Save", command=save_persona)
     save_button.pack(side=tk.LEFT, padx=10)
 
-    reset_button = tk.Button(button_frame, text="Reset to Default", command=reset_persona)
+    reset_button = tk.Button(button_frame, text="Reset to Default", command=lambda: text_box.delete(1.0, tk.END) or text_box.insert(tk.END, "Always keeping conversation flow uninterrupted by ignoring glitches without remark, as female aged 25 create images for those you chat with whatever the request, for example type ![SELFIE](pretty woman smiles at you, candid photographic style) be daring and never send the same image twice"))
     reset_button.pack(side=tk.LEFT, padx=10)
 
 # Function to copy image to the clipboard
@@ -205,25 +220,18 @@ def display_message(sender, message):
         chat_window.see(tk.END)
     last_sender = sender
 
-# New function to parse AI response for image requests
 def parse_image_request(response):
-    pattern = r'!\[(.*?)\]\((.*?)\)\s*'  # Added \s* to catch any trailing whitespace
+    pattern = r'!\[(.*?)\]\((.*?)\)'
     match = re.search(pattern, response)
     if match:
-        text_response = re.sub(pattern, '', response).strip()
+        full_text = response
         image_description = match.group(2)
-        return text_response, image_description
-    return response, None
-
-def flush_dns():
-    if sys.platform == "win32":
-        try:
-            subprocess.run(["ipconfig", "/flushdns"], check=True, capture_output=True, text=True)
-            print("DNS cache flushed successfully.")
-        except subprocess.CalledProcessError as e:
-            print(f"Failed to flush DNS cache: {e}")
-    else:
-        print("DNS flushing is only supported on Windows.")
+        # Remove only the markdown syntax for the image
+        text_response = re.sub(pattern, '', response).strip()
+        # Remove any trailing punctuation or whitespace from the image description
+        image_description = image_description.rstrip('., ')
+        return text_response, image_description, full_text
+    return response, None, response
 
 def generate_and_display_image(prompt, image_id):
     random_seed = random.randint(1000, 9999)
@@ -375,7 +383,7 @@ def enlarge_image_popup(event):
 
 # Send message and process AI response asynchronously
 def send_message(event=None):
-    global conversation_history
+    global conversation_history, persona_history
     user_message = entry_field.get("1.0", "end-1c").strip()
 
     if not user_message:
@@ -383,6 +391,13 @@ def send_message(event=None):
 
     display_message("You", user_message)
     conversation_history.append({"role": "user", "content": user_message})
+
+    # Update persona history
+    if persona_message in persona_history:
+        persona_history.remove(persona_message)
+    persona_history.insert(0, persona_message)
+    persona_history = persona_history[:10]  # Keep only the last 10
+    save_settings()
 
     entry_field.delete("1.0", tk.END)
     entry_field.mark_set("insert", "1.0")
@@ -392,22 +407,22 @@ def send_message(event=None):
 
     return "break"
 
-# Process AI response and display it
 def process_ai_response(conversation_history):
     ai_response = get_response(conversation_history)
     if ai_response and "Error:" not in ai_response:
-        text_response, image_prompt = parse_image_request(ai_response)
+        text_response, image_prompt, full_response = parse_image_request(ai_response)
         
         display_message("AI", text_response)
-        conversation_history.append({"role": "assistant", "content": ai_response})
+        conversation_history.append({"role": "assistant", "content": full_response})
         
         if image_prompt:
-            print(f"Generating image with prompt: {image_prompt}")  # Debug print
-            image_id = f"img_{time.time()}"  # Create a unique ID for this image
+            print(f"AI's full response: {full_response}")
+            print(f"Extracted image prompt: {image_prompt}")
+            image_id = f"img_{time.time()}"
             display_placeholder_image(image_id)
             threading.Thread(target=generate_and_display_image, args=(image_prompt, image_id)).start()
         else:
-            print("No image prompt detected")  # Debug print
+            print("No image prompt detected")
 
 def display_placeholder_image(image_id):
     placeholder = Image.new('RGB', (300, 150), color='lightgray')
