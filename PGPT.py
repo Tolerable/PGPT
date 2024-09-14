@@ -1,3 +1,16 @@
+import os
+import sys
+
+if getattr(sys, 'frozen', False):
+    base_dir = sys._MEIPASS  # Nuitka extracts everything here
+    os.environ['TCL_LIBRARY'] = os.path.join(base_dir, 'tcl')
+    os.environ['TK_LIBRARY'] = os.path.join(base_dir, 'tk')
+    print("TCL_LIBRARY:", os.environ['TCL_LIBRARY'])  # Add debugging
+    print("TK_LIBRARY:", os.environ['TK_LIBRARY'])    # Add debugging
+else:
+    print("Not running as standalone executable")
+    
+# Now import tkinter after setting the paths
 import tkinter as tk
 from tkinter import scrolledtext, simpledialog
 import requests
@@ -10,7 +23,10 @@ from io import BytesIO
 import re
 import random
 import os
- 
+import urllib.parse
+import subprocess
+import sys
+
 # Path to the JSON file for storing settings
 settings_file = "settings.json"
 
@@ -19,7 +35,7 @@ conversation_history = []
 message_counter = 0
 HISTORY_LIMIT = 10  # Adjust as needed
 last_sender = None
-persona_message = "Keep chat flow nonstop by ignoring glitches without remark, respond as daring female sassamouth with penchant for innuendo with desire and risque audacious replies pushing boundaries sending a selfie anytime images are desired for example by typing ![SELFIE](smiling woman with red hair waving lays on bed) consider all as real available photos"
+persona_message = "Always keeping conversation flow uninterrupted by ignoring glitches without remark, as female aged 25 create images for those you chat with whatever the request, for example type ![SELFIE](pretty woman smiles at you, candid photographic style) be daring and never send the same image twice"
 append_message = "candid_photographic_style"  # Default appended message for photo prompts
 image_popup = None
 
@@ -125,8 +141,6 @@ def edit_append_message():
     save_button.pack(pady=10)
 
 # Retry logic and repair for conversation errors
-import time
-
 def get_response(messages):
     global message_counter
     max_retries = 8
@@ -201,22 +215,94 @@ def parse_image_request(response):
         return text_response, image_description
     return response, None
 
+def flush_dns():
+    if sys.platform == "win32":
+        try:
+            subprocess.run(["ipconfig", "/flushdns"], check=True, capture_output=True, text=True)
+            print("DNS cache flushed successfully.")
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to flush DNS cache: {e}")
+    else:
+        print("DNS flushing is only supported on Windows.")
+
 def generate_and_display_image(prompt, image_id):
     random_seed = random.randint(1000, 9999)
     full_prompt = f"{prompt}, {append_message}"
-    url_display = f"https://image.pollinations.ai/prompt/{full_prompt}?nologo=true&model=flux&nofeed=true&width=2048&height=1024&seed={random_seed}"
+    encoded_prompt = urllib.parse.quote(full_prompt)
+    url_display = f"https://image.pollinations.ai/prompt/{encoded_prompt}?nologo=true&model=flux&nofeed=true&width=2048&height=1024&seed={random_seed}"
     print(f"Generating image:\nPrompt: {full_prompt}\nSeed: {random_seed}\nURL: {url_display}")
 
-    url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(full_prompt)}?nologo=true&model=flux&nofeed=true&width=2048&height=1024&seed={random_seed}"
-    response = requests.get(url)
-    if response.status_code == 200:
-        full_image = Image.open(BytesIO(response.content))
-        display_size = (300, 150)
-        display_image = full_image.copy()
-        display_image.thumbnail(display_size, Image.LANCZOS)
-        photo = ImageTk.PhotoImage(display_image)
-        
-        root.after(0, lambda: replace_placeholder_image(image_id, photo, full_image))
+    url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?nologo=true&model=flux&nofeed=true&width=2048&height=1024&seed={random_seed}"
+    
+    retry_count = 0
+    max_retries = 3
+    
+    while retry_count < max_retries:
+        print(f"Attempt {retry_count + 1} of {max_retries}")
+        try:
+            print(f"Sending request to URL: {url}")
+            response = requests.get(url, timeout=30)
+            print(f"Received response with status code: {response.status_code}")
+            response.raise_for_status()
+            
+            content_type = response.headers.get('content-type', '')
+            print(f"Response content type: {content_type}")
+            if 'image' not in content_type:
+                print(f"Error: Received non-image response. Content-Type: {content_type}")
+                print(f"Response content: {response.text[:200]}...")
+                return
+
+            print("Successfully received image data. Processing...")
+            full_image = Image.open(BytesIO(response.content))
+            print(f"Image opened successfully. Size: {full_image.size}")
+            display_size = (300, 150)
+            display_image = full_image.copy()
+            display_image.thumbnail(display_size, Image.LANCZOS)
+            photo = ImageTk.PhotoImage(display_image)
+            
+            print("Replacing placeholder image...")
+            root.after(0, lambda: replace_placeholder_image(image_id, photo, full_image))
+            print("Image replacement scheduled.")
+            return
+        except requests.RequestException as e:
+            print(f"Error fetching image: {e}")
+            if "443" in str(e):
+                print("Encountered a 443 error. Flushing DNS and retrying...")
+                flush_dns()
+                retry_count += 1
+                if retry_count < max_retries:
+                    print(f"Retrying after DNS flush. Attempt {retry_count + 1} of {max_retries}")
+                    continue
+            else:
+                print("Non-443 error encountered. Stopping retry attempts.")
+                break
+        except PIL.UnidentifiedImageError:
+            print(f"Error: Unable to identify image. Response content-type: {response.headers.get('content-type')}")
+            print(f"First 200 bytes of response: {response.content[:200]}")
+            break
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            break
+
+    print(f"Failed to generate image after {retry_count} attempts.")
+
+# Modify the flush_dns function to provide more feedback
+def flush_dns():
+    if sys.platform == "win32":
+        try:
+            print("Attempting to flush DNS cache...")
+            result = subprocess.run(["ipconfig", "/flushdns"], check=True, capture_output=True, text=True)
+            print("DNS cache flush command executed.")
+            print(f"Command output: {result.stdout}")
+            if "Successfully flushed the DNS Resolver Cache" in result.stdout:
+                print("DNS cache flushed successfully.")
+            else:
+                print("DNS cache flush may not have been successful. Please check the output.")
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to flush DNS cache: {e}")
+            print(f"Error output: {e.stderr}")
+    else:
+        print("DNS flushing is only supported on Windows.")
 
 def replace_placeholder_image(image_id, photo, full_image):
     for child in chat_window.winfo_children():
