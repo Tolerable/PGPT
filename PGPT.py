@@ -12,7 +12,7 @@ else:
     
 # Now import tkinter after setting the paths
 import tkinter as tk
-from tkinter import scrolledtext, simpledialog
+from tkinter import scrolledtext, simpledialog, messagebox, ttk, StringVar, IntVar, BooleanVar
 import requests
 import json
 import time
@@ -26,6 +26,8 @@ import os
 import urllib.parse
 import subprocess
 import sys
+import textwrap
+import unicodedata
 
 # Path to the JSON file for storing settings
 settings_file = "settings.json"
@@ -39,6 +41,54 @@ persona_message = "Always keeping conversation flow uninterrupted by ignoring gl
 append_message = "candid_photographic_style"  # Default appended message for photo prompts
 image_popup = None
 persona_history = []
+last_direct_prompt = ""
+
+IMAGE_RATIOS = {
+    "16:9": (2048, 1152),
+    "3:4": (1536, 2048),
+    "1:1": (1024, 1024),
+    "Custom": (2048, 1024)  # Default custom size
+}
+current_image_ratio = "16:9"  # Default ratio
+
+def sanitize_prompt(prompt):
+    # Replace common special characters
+    replacements = {
+        'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
+        'á': 'a', 'à': 'a', 'â': 'a', 'ä': 'a',
+        'í': 'i', 'ì': 'i', 'î': 'i', 'ï': 'i',
+        'ó': 'o', 'ò': 'o', 'ô': 'o', 'ö': 'o',
+        'ú': 'u', 'ù': 'u', 'û': 'u', 'ü': 'u',
+        'ñ': 'n', 'ç': 'c'
+    }
+    for special, normal in replacements.items():
+        prompt = prompt.replace(special, normal)
+    
+    # Remove any remaining non-ASCII characters
+    prompt = ''.join(c for c in unicodedata.normalize('NFKD', prompt) if not unicodedata.combining(c))
+    
+    return prompt
+
+def change_image_ratio():
+    global current_image_ratio
+    new_ratio = simpledialog.askstring("Image Ratio", "Choose ratio (16:9, 3:4, 1:1) or enter custom width:height:")
+    if new_ratio:
+        if new_ratio in IMAGE_RATIOS:
+            current_image_ratio = new_ratio
+        elif ":" in new_ratio:
+            try:
+                w, h = map(int, new_ratio.split(":"))
+                IMAGE_RATIOS["Custom"] = (w * 256, h * 256)  # Scale up for better quality
+                current_image_ratio = "Custom"
+            except ValueError:
+                tk.messagebox.showerror("Invalid Input", "Please enter valid numbers for custom ratio.")
+        else:
+            tk.messagebox.showerror("Invalid Input", "Please enter a valid ratio or custom dimensions.")
+    update_image_size_label()
+
+def update_image_size_label():
+    width, height = IMAGE_RATIOS[current_image_ratio]
+    image_size_label.config(text=f"Current image size: {width}x{height}")
 
 # Load settings from JSON file
 def load_settings():
@@ -185,8 +235,15 @@ def get_response(messages):
                 return response_text
             else:
                 raise ValueError("Empty response received")
-        except (requests.exceptions.RequestException, ValueError) as e:
+        except requests.exceptions.RequestException as e:
             print(f"Attempt {attempt + 1} failed: {str(e)}")
+
+            # Check for 443 error and flush DNS if encountered
+            if "443" in str(e):
+                print("443 error encountered. Flushing DNS...")
+                flush_dns()
+                print("DNS flushed. Retrying...")
+                continue  # Retry immediately after flushing DNS
 
             # Calculate delay for this attempt
             delay = base_delay + (attempt * 5)  # Increases by 5 seconds each attempt
@@ -235,64 +292,117 @@ def parse_image_request(response):
 
 def generate_and_display_image(prompt, image_id):
     random_seed = random.randint(1000, 9999)
-    full_prompt = f"{prompt}, {append_message}"
+    sanitized_prompt = sanitize_prompt(prompt)  # Sanitize the prompt
+    full_prompt = f"{sanitized_prompt}, {append_message}"
     encoded_prompt = urllib.parse.quote(full_prompt)
-    url_display = f"https://image.pollinations.ai/prompt/{encoded_prompt}?nologo=true&model=flux&nofeed=true&width=2048&height=1024&seed={random_seed}"
-    print(f"Generating image:\nPrompt: {full_prompt}\nSeed: {random_seed}\nURL: {url_display}")
+    width, height = IMAGE_RATIOS[current_image_ratio]
+    enhance_param = "&enhance=true" if enhance_image.get() else ""
+    url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?nologo=true&model=flux&nofeed=true&width={width}&height={height}&seed={random_seed}{enhance_param}"
 
-    url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?nologo=true&model=flux&nofeed=true&width=2048&height=1024&seed={random_seed}"
-    
-    retry_count = 0
-    max_retries = 3
-    
-    while retry_count < max_retries:
-        print(f"Attempt {retry_count + 1} of {max_retries}")
+    max_retries = 5
+    base_wait_time = 2  # seconds
+
+    for attempt in range(max_retries):
         try:
+            print(f"Attempt {attempt + 1} of {max_retries}")
             print(f"Sending request to URL: {url}")
             response = requests.get(url, timeout=30)
             print(f"Received response with status code: {response.status_code}")
-            response.raise_for_status()
-            
+
             content_type = response.headers.get('content-type', '')
             print(f"Response content type: {content_type}")
-            if 'image' not in content_type:
-                print(f"Error: Received non-image response. Content-Type: {content_type}")
-                print(f"Response content: {response.text[:200]}...")
-                return
 
-            print("Successfully received image data. Processing...")
-            full_image = Image.open(BytesIO(response.content))
-            print(f"Image opened successfully. Size: {full_image.size}")
-            display_size = (300, 150)
-            display_image = full_image.copy()
-            display_image.thumbnail(display_size, Image.LANCZOS)
-            photo = ImageTk.PhotoImage(display_image)
-            
-            print("Replacing placeholder image...")
-            root.after(0, lambda: replace_placeholder_image(image_id, photo, full_image))
-            print("Image replacement scheduled.")
-            return
+            if 'image' in content_type:
+                print("Successfully received image data. Processing...")
+                full_image = Image.open(BytesIO(response.content))
+                print(f"Image opened successfully. Size: {full_image.size}")
+                display_size = (300, int(300 * height / width))
+                display_image = full_image.copy()
+                display_image.thumbnail(display_size, Image.LANCZOS)
+                photo = ImageTk.PhotoImage(display_image)
+                
+                print("Replacing placeholder image...")
+                root.after(0, lambda: replace_placeholder_image(image_id, photo, full_image))
+                print("Image replacement scheduled.")
+                return
+            else:
+                print(f"Received non-image response. Content-Type: {content_type}")
+                raw_content = response.content.decode('utf-8', errors='replace')[:1000]  # Display first 1000 characters
+                print(f"Raw content: {raw_content}")
+                display_non_image_response(image_id, raw_content, content_type, response.status_code)
+                
+                if attempt < max_retries - 1:
+                    wait_time = base_wait_time * (2 ** attempt)  # Exponential backoff
+                    print(f"Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    print("Max retries reached. Unable to generate image.")
+                    return
+
         except requests.RequestException as e:
             print(f"Error fetching image: {e}")
             if "443" in str(e):
-                print("Encountered a 443 error. Flushing DNS and retrying...")
+                print("443 error encountered. Flushing DNS...")
                 flush_dns()
-                retry_count += 1
-                if retry_count < max_retries:
-                    print(f"Retrying after DNS flush. Attempt {retry_count + 1} of {max_retries}")
-                    continue
+                print("DNS flushed. Retrying immediately...")
+                continue  # Retry immediately after flushing DNS
+            if attempt < max_retries - 1:
+                wait_time = base_wait_time * (2 ** attempt)  # Exponential backoff
+                print(f"Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
             else:
-                print("Non-443 error encountered. Stopping retry attempts.")
-                break
-        except PIL.UnidentifiedImageError:
-            print(f"Error: Unable to identify image. Response content-type: {response.headers.get('content-type')}")
-            print(f"First 200 bytes of response: {response.content[:200]}")
-            break
-        except Exception as e:
-            print(f"Unexpected error: {e}")
-            break
+                print("Max retries reached. Unable to generate image.")
+                display_error_message(image_id, f"Failed to fetch image after {max_retries} attempts")
+                return
 
-    print(f"Failed to generate image after {retry_count} attempts.")
+    print(f"Failed to generate image after {max_retries} attempts.")
+
+def direct_send():
+    global last_direct_prompt
+    user_prompt = entry_field.get("1.0", "end-1c").strip()
+    if not user_prompt:
+        return
+    last_direct_prompt = user_prompt  # Store the prompt
+    sanitized_prompt = sanitize_prompt(user_prompt)
+    display_message("You", f"[DIRECT SEND]: {sanitized_prompt}")
+    
+    image_id = f"img_{time.time()}"
+    display_placeholder_image(image_id)
+    threading.Thread(target=generate_and_display_image, args=(sanitized_prompt, image_id)).start()
+    
+    entry_field.delete("1.0", tk.END)
+
+def reload_last_prompt():
+    entry_field.delete("1.0", tk.END)
+    entry_field.insert(tk.END, last_direct_prompt)
+
+def display_non_image_response(image_id, text, content_type, status_code):
+    width, height = IMAGE_RATIOS[current_image_ratio]
+    display_width = 300
+    display_height = int(display_width * height / width)
+    response_image = Image.new('RGB', (display_width, display_height), color='lightgray')
+    draw = ImageDraw.Draw(response_image)
+    
+    header = f"Status: {status_code}, Type: {content_type}\n\n"
+    full_text = header + text
+    
+    # Wrap text to fit the image width
+    wrapped_text = textwrap.fill(full_text, width=40)
+    draw.text((10, 10), wrapped_text, fill='black')
+    
+    photo = ImageTk.PhotoImage(response_image)
+    root.after(0, lambda: replace_placeholder_image(image_id, photo, response_image))
+
+def display_error_message(image_id, message):
+    width, height = IMAGE_RATIOS[current_image_ratio]
+    display_width = 300
+    display_height = int(display_width * height / width)
+    error_image = Image.new('RGB', (display_width, display_height), color='lightgray')
+    draw = ImageDraw.Draw(error_image)
+    draw.text((display_width//2, display_height//2), f"Error: {message}", fill='black', anchor='mm')
+    photo = ImageTk.PhotoImage(error_image)
+    
+    root.after(0, lambda: replace_placeholder_image(image_id, photo, error_image))
 
 # Modify the flush_dns function to provide more feedback
 def flush_dns():
@@ -334,7 +444,13 @@ def enlarge_image_popup(event):
 
     # Calculate 90% of screen height and adjust width accordingly to maintain aspect ratio
     max_height = int(screen_height * 0.9)
-    max_width = int(full_image.width * (max_height / full_image.height))
+    aspect_ratio = full_image.width / full_image.height
+    max_width = int(max_height * aspect_ratio)
+
+    # If the calculated width is greater than 90% of screen width, adjust both dimensions
+    if max_width > screen_width * 0.9:
+        max_width = int(screen_width * 0.9)
+        max_height = int(max_width / aspect_ratio)
 
     def close_popup(event):
         global image_popup
@@ -355,16 +471,17 @@ def enlarge_image_popup(event):
         image_label = tk.Label(image_popup)
         image_label.pack()
 
-    # Resize the image to 90% of the screen height, keeping the aspect ratio
-    full_image.thumbnail((max_width, max_height), Image.LANCZOS)
+    # Resize the image to fit within the calculated dimensions, keeping the aspect ratio
+    resized_image = full_image.copy()
+    resized_image.thumbnail((max_width, max_height), Image.LANCZOS)
 
     # Display the resized image in the popup window
-    photo = ImageTk.PhotoImage(full_image)
+    photo = ImageTk.PhotoImage(resized_image)
     image_label.config(image=photo)
     image_label.image = photo  # Keep a reference to avoid garbage collection
 
     # Right-click context menu for copying the enlarged image
-    image_label.bind("<Button-3>", lambda e: on_right_click(e, full_image))
+    image_label.bind("<Button-3>", lambda e: on_right_click(e, resized_image))
 
     # Calculate the window size based on the image
     window_width = photo.width()
@@ -425,12 +542,15 @@ def process_ai_response(conversation_history):
             print("No image prompt detected")
 
 def display_placeholder_image(image_id):
-    placeholder = Image.new('RGB', (300, 150), color='lightgray')
+    width, height = IMAGE_RATIOS[current_image_ratio]
+    display_width = 300
+    display_height = int(display_width * height / width)
+    placeholder = Image.new('RGB', (display_width, display_height), color='lightgray')
     draw = ImageDraw.Draw(placeholder)
-    draw.text((150, 75), "Loading...", fill='black', anchor='mm')
+    draw.text((display_width//2, display_height//2), "Loading...", fill='black', anchor='mm')
     photo = ImageTk.PhotoImage(placeholder)
     
-    label = tk.Label(chat_window, image=photo, width=300, height=150)
+    label = tk.Label(chat_window, image=photo, width=display_width, height=display_height)
     label.image = photo
     label.image_id = image_id
     
@@ -440,10 +560,32 @@ def display_placeholder_image(image_id):
     chat_window.config(state=tk.DISABLED)
     chat_window.see(tk.END)
     
+def update_ratio(*args):
+    global current_image_ratio
+    selected = ratio_var.get()
+    if selected == "Custom":
+        try:
+            width = int(custom_width_var.get())
+            height = int(custom_height_var.get())
+            if width > 0 and height > 0:
+                IMAGE_RATIOS["Custom"] = (width, height)
+                current_image_ratio = "Custom"
+            else:
+                raise ValueError
+        except ValueError:
+            tk.messagebox.showerror("Invalid Input", "Please enter valid positive integers for custom dimensions.")
+            ratio_var.set(current_image_ratio)  # Revert to previous selection
+            return
+    else:
+        current_image_ratio = selected
+    update_image_size_label()
+
+# Update the main window setup
 # Set up the main window
 root = tk.Tk()
+enhance_image = BooleanVar(value=False)
 root.title("PGPT Chat & Images")
-root.geometry("650x750")
+root.geometry("650x800")  # Increased height to accommodate new frame
 
 # Load settings on startup
 load_settings()
@@ -482,9 +624,57 @@ entry_field.config(yscrollcommand=entry_scrollbar.set)
 entry_field.bind("<Return>", send_message)
 entry_field.bind("<Shift-Return>", lambda e: None)
 
-# Create the send button
-send_button = tk.Button(root, text="Send", command=send_message, height=2)
-send_button.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="ew")
+# Create a frame for the send buttons
+send_buttons_frame = tk.Frame(root)
+send_buttons_frame.grid(row=2, column=0, padx=10, pady=(0, 10), sticky="ew")
+send_buttons_frame.grid_columnconfigure(0, weight=16)  # SEND button takes 80%
+send_buttons_frame.grid_columnconfigure(1, weight=3)   # DIRECT button takes 15%
+send_buttons_frame.grid_columnconfigure(2, weight=1)   # REDO button takes 5%
+
+# Create the send button (80% width)
+send_button = tk.Button(send_buttons_frame, text="SEND", command=send_message, height=2)
+send_button.grid(row=0, column=0, sticky="ew")
+
+# Create the direct button (15% width)
+direct_button = tk.Button(send_buttons_frame, text="DIRECT", command=direct_send, height=2)
+direct_button.grid(row=0, column=1, sticky="ew")
+
+# Create the redo button (5% width)
+redo_button = tk.Button(send_buttons_frame, text="RE\nDO", command=reload_last_prompt, height=2)
+redo_button.grid(row=0, column=2, sticky="nsew")
+
+# Create a frame for image ratio selection
+ratio_frame = ttk.LabelFrame(root, text="Image Ratio")
+ratio_frame.grid(row=3, column=0, padx=10, pady=(0, 10), sticky="ew")
+
+ratio_var = StringVar(value=current_image_ratio)
+ratio_var.trace("w", update_ratio)
+
+ttk.Radiobutton(ratio_frame, text="16:9", variable=ratio_var, value="16:9").grid(row=0, column=0, padx=5, pady=5)
+ttk.Radiobutton(ratio_frame, text="3:4", variable=ratio_var, value="3:4").grid(row=0, column=1, padx=5, pady=5)
+ttk.Radiobutton(ratio_frame, text="1:1", variable=ratio_var, value="1:1").grid(row=0, column=2, padx=5, pady=5)
+ttk.Radiobutton(ratio_frame, text="Custom", variable=ratio_var, value="Custom").grid(row=0, column=3, padx=5, pady=5)
+
+custom_frame = ttk.Frame(ratio_frame)
+custom_frame.grid(row=0, column=4, padx=5, pady=5)
+
+ttk.Label(custom_frame, text="W:").pack(side=tk.LEFT)
+custom_width_var = StringVar(value="2048")
+ttk.Entry(custom_frame, textvariable=custom_width_var, width=5).pack(side=tk.LEFT, padx=(0, 2))
+ttk.Label(custom_frame, text="H:").pack(side=tk.LEFT, padx=(2, 0))
+custom_height_var = StringVar(value="1024")
+ttk.Entry(custom_frame, textvariable=custom_height_var, width=5).pack(side=tk.LEFT, padx=(0, 5))
+
+# Add Enhance checkbox
+enhance_check = ttk.Checkbutton(ratio_frame, text="Enhance", variable=enhance_image)
+enhance_check.grid(row=0, column=5, padx=5, pady=5)
+
+# Create a label to display current image size
+image_size_label = tk.Label(root, text="Current image size: 2048x1152")
+image_size_label.grid(row=4, column=0, padx=10, pady=(0, 5), sticky="w")
+
+# Call this function to initialize the label
+update_image_size_label()
 
 # Set focus to the entry field
 entry_field.focus()
