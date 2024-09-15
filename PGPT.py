@@ -283,8 +283,10 @@ def parse_image_request(response):
     if match:
         full_text = response
         image_description = match.group(2)
-        # Remove only the markdown syntax for the image
+        # Remove the markdown syntax for the image and any surrounding newlines
         text_response = re.sub(pattern, '', response).strip()
+        # Remove any consecutive newlines, replacing them with a single newline
+        text_response = re.sub(r'\n+', '\n', text_response)
         # Remove any trailing punctuation or whitespace from the image description
         image_description = image_description.rstrip('., ')
         return text_response, image_description, full_text
@@ -404,21 +406,32 @@ def display_error_message(image_id, message):
     
     root.after(0, lambda: replace_placeholder_image(image_id, photo, error_image))
 
-# Modify the flush_dns function to provide more feedback
 def flush_dns():
     if sys.platform == "win32":
-        try:
-            print("Attempting to flush DNS cache...")
-            result = subprocess.run(["ipconfig", "/flushdns"], check=True, capture_output=True, text=True)
-            print("DNS cache flush command executed.")
-            print(f"Command output: {result.stdout}")
-            if "Successfully flushed the DNS Resolver Cache" in result.stdout:
-                print("DNS cache flushed successfully.")
-            else:
-                print("DNS cache flush may not have been successful. Please check the output.")
-        except subprocess.CalledProcessError as e:
-            print(f"Failed to flush DNS cache: {e}")
-            print(f"Error output: {e.stderr}")
+        max_attempts = 3
+        base_delay = 2  # seconds
+
+        for attempt in range(max_attempts):
+            try:
+                print(f"Attempt {attempt + 1} of {max_attempts} to flush DNS cache...")
+                result = subprocess.run(["ipconfig", "/flushdns"], check=True, capture_output=True, text=True)
+                print("DNS cache flush command executed.")
+                print(f"Command output: {result.stdout}")
+                if "Successfully flushed the DNS Resolver Cache" in result.stdout:
+                    print("DNS cache flushed successfully.")
+                    return
+                else:
+                    print("DNS cache flush may not have been successful. Please check the output.")
+            except subprocess.CalledProcessError as e:
+                print(f"Failed to flush DNS cache: {e}")
+                print(f"Error output: {e.stderr}")
+            
+            if attempt < max_attempts - 1:  # Don't sleep after the last attempt
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                print(f"Waiting {delay:.2f} seconds before next attempt...")
+                time.sleep(delay)
+
+        print(f"DNS flush unsuccessful after {max_attempts} attempts.")
     else:
         print("DNS flushing is only supported on Windows.")
 
